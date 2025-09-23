@@ -35,8 +35,8 @@
             this.AutoScaleDimensions = new System.Drawing.SizeF(12F, 25F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
             this.ClientSize = new System.Drawing.Size(1116, 650);
-            this.Name = "Form1";
-            this.Text = "Form1";
+            this.Name = "Aims";
+            this.Text = "Aims";                                                 // Changed from "Form1" to "Aims" which is shown in the window title bar
             this.ResumeLayout(false);
 
         }
