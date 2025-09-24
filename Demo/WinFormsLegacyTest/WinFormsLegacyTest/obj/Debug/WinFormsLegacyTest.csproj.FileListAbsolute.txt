@@ -1,0 +1,10 @@
+C:\Users\ccrun\source\repos\OmegaairAI\Demo\WinFormsLegacyTest\WinFormsLegacyTest\bin\Debug\WinFormsLegacyTest.exe.config
+C:\Users\ccrun\source\repos\OmegaairAI\Demo\WinFormsLegacyTest\WinFormsLegacyTest\bin\Debug\WinFormsLegacyTest.exe
+C:\Users\ccrun\source\repos\OmegaairAI\Demo\WinFormsLegacyTest\WinFormsLegacyTest\bin\Debug\WinFormsLegacyTest.pdb
+C:\Users\ccrun\source\repos\OmegaairAI\Demo\WinFormsLegacyTest\WinFormsLegacyTest\obj\Debug\WinFormsLegacyTest.csproj.AssemblyReference.cache
+C:\Users\ccrun\source\repos\OmegaairAI\Demo\WinFormsLegacyTest\WinFormsLegacyTest\obj\Debug\WinFormsLegacyTest.Properties.Resources.resources
+C:\Users\ccrun\source\repos\OmegaairAI\Demo\WinFormsLegacyTest\WinFormsLegacyTest\obj\Debug\WinFormsLegacyTest.csproj.GenerateResource.cache
+C:\Users\ccrun\source\repos\OmegaairAI\Demo\WinFormsLegacyTest\WinFormsLegacyTest\obj\Debug\WinFormsLegacyTest.csproj.CoreCompileInputs.cache
+C:\Users\ccrun\source\repos\OmegaairAI\Demo\WinFormsLegacyTest\WinFormsLegacyTest\obj\Debug\WinFormsLegacyTest.exe
+C:\Users\ccrun\source\repos\OmegaairAI\Demo\WinFormsLegacyTest\WinFormsLegacyTest\obj\Debug\WinFormsLegacyTest.pdb
+C:\Users\ccrun\source\repos\OmegaairAI\Demo\WinFormsLegacyTest\WinFormsLegacyTest\obj\Debug\WinFormsLegacyTest.Form1.resources
