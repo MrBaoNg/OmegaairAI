@@ -24,6 +24,75 @@ namespace WinFormsLegacyTest
         private const int HangarColumnWidth = 120;
         private const int HeaderHeight = 30;
 
+        // Simple undo stack
+        private const int MaxUndoSteps = 10;
+        private Stack<UndoAction> undoStack = new Stack<UndoAction>();
+
+        private class UndoAction
+        {
+            public string Description { get; set; }
+            // previous state for the affected keys: value == null means key did not exist
+            public Dictionary<string, Booking> Previous { get; set; }
+            public DateTime Time { get; set; }
+        }
+
+        // clone a booking so undo stores independent copies
+        private Booking CloneBooking(Booking b)
+        {
+            if (b == null) return null;
+            return new Booking { Hangar = b.Hangar, Date = b.Date, Description = b.Description };
+        }
+
+        // push an undo snapshot for the given keys (call BEFORE you change bookings)
+        private void PushUndo(IEnumerable<string> keys, string description)
+        {
+            var prev = new Dictionary<string, Booking>();
+            foreach (var k in keys.Distinct())
+            {
+                prev[k] = bookings.ContainsKey(k) ? CloneBooking(bookings[k]) : null;
+            }
+
+            // push and cap stack size
+            undoStack.Push(new UndoAction { Description = description, Previous = prev, Time = DateTime.Now });
+            while (undoStack.Count > MaxUndoSteps)
+                undoStack = new Stack<UndoAction>(undoStack.Reverse().Skip(1).Reverse()); // drop oldest
+        }
+
+        // apply the most recent undo
+        private void UndoLastAction()
+        {
+            if (undoStack.Count == 0)
+            {
+                MessageBox.Show("Nothing to undo.", "Undo", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var action = undoStack.Pop();
+
+            // Restore each key to its previous value (null => remove)
+            foreach (var kv in action.Previous)
+            {
+                if (kv.Value == null)
+                {
+                    // previously there was no booking for this key — remove if present now
+                    if (bookings.ContainsKey(kv.Key))
+                        bookings.Remove(kv.Key);
+                }
+                else
+                {
+                    // restore cloned booking
+                    bookings[kv.Key] = CloneBooking(kv.Value);
+                }
+            }
+
+            // refresh UI
+            RefreshSlotVisuals();
+
+            MessageBox.Show($"Undid: {action.Description}", "Undo", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+
+
 
         public Form1()
         {
@@ -72,6 +141,7 @@ namespace WinFormsLegacyTest
             public string Description { get; set; }
         }
 
+
         // ---------- UI builder ----------
         private void SetupUI()
         {
@@ -111,6 +181,10 @@ namespace WinFormsLegacyTest
             Button blockButton = new Button { Text = "Block", Width = 75 };
             Button multiButton = new Button { Text = "Multi", Width = 75 };
             Button clearButton = new Button { Text = "Clear", Width = 75 };
+            Button clearHangarButton = new Button { Text = "Clear Hangar", Width = 100 };
+            Button undoButton = new Button { Text = "Undo", Width = 75 };
+
+
 
 
 
@@ -120,6 +194,9 @@ namespace WinFormsLegacyTest
             blockButton.Click += BlockButton_Click;
             multiButton.Click += MultiButton_Click;
             clearButton.Click += ClearButton_Click;
+            clearHangarButton.Click += ClearHangarButton_Click;
+            undoButton.Click += (s, e) => UndoLastAction();
+
 
 
             buttonPanel.Controls.Add(addButton);
@@ -128,6 +205,8 @@ namespace WinFormsLegacyTest
             buttonPanel.Controls.Add(blockButton);
             buttonPanel.Controls.Add(multiButton);
             buttonPanel.Controls.Add(clearButton);
+            buttonPanel.Controls.Add(clearHangarButton);
+            buttonPanel.Controls.Add(undoButton);
 
             mainLayout.Controls.Add(buttonPanel, 0, 0);
 
@@ -308,12 +387,6 @@ namespace WinFormsLegacyTest
                 // repaint slot visuals according to bookings (keeps color/selection consistent)
                 RefreshSlotVisuals();
 
-                // ***Maybe unnecessary but felt faster with it included***
-                //// enable double buffering on the TableLayoutPanel using reflection
-                //var t = scheduleGrid.GetType();
-                //pi = t.GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
-                //pi?.SetValue(scheduleGrid, true, null);
-
                 // also turn on double buffering for the form itself (optional)
                 this.SetStyle(System.Windows.Forms.ControlStyles.OptimizedDoubleBuffer |
                               System.Windows.Forms.ControlStyles.AllPaintingInWmPaint, true);
@@ -397,7 +470,6 @@ namespace WinFormsLegacyTest
             // (do NOT open the BookingDialog here)
         }
 
-
         private void AddButton_Click(object sender, EventArgs e)
         {
             if (selectedSlot == null)
@@ -423,15 +495,23 @@ namespace WinFormsLegacyTest
                     };
                     string newKey = SlotKey(booking.Hangar, booking.Date);
 
+                    // before saving changes: include both oldKey and newKey in the snapshot
+                    var affected = new List<string> { oldKey };
+                    if (newKey != oldKey) affected.Add(newKey);
+                    PushUndo(affected, "Add/Edit booking");
+
+                    // save the booking (use the 'booking' variable, not 'updated')
                     bookings[newKey] = booking;
+
+                    // if the booking moved from oldKey to newKey, remove the old entry
                     if (newKey != oldKey && bookings.ContainsKey(oldKey))
                         bookings.Remove(oldKey);
 
+                    // refresh UI once
                     RefreshSlotVisuals();
                 }
             }
         }
-
 
         private void EditButton_Click(object sender, EventArgs e)
         {
@@ -465,6 +545,11 @@ namespace WinFormsLegacyTest
                             return;
                     }
 
+                    // before saving changes: include both old (key) and newKey in the snapshot
+                    var affected = new List<string> { key };
+                    if (newKey != key) affected.Add(newKey);
+                    PushUndo(affected, "Add/Edit booking");
+
                     bookings[newKey] = updated;
                     if (newKey != key && bookings.ContainsKey(key))
                         bookings.Remove(key);
@@ -475,13 +560,13 @@ namespace WinFormsLegacyTest
                 {
                     if (bookings.ContainsKey(key))
                     {
+                        PushUndo(new[] { key }, "Remove booking"); // allow undo for removal too
                         bookings.Remove(key);
                         RefreshSlotVisuals();
                     }
                 }
             }
         }
-
 
         private void DeleteButton_Click(object sender, EventArgs e)
         {
@@ -494,18 +579,24 @@ namespace WinFormsLegacyTest
             string key = selectedSlot.Tag as string;
             if (string.IsNullOrEmpty(key)) return;
 
-            if (bookings.ContainsKey(key))
-            {
-                if (MessageBox.Show("Remove this booking?", "Confirm", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
-                {
-                    bookings.Remove(key);
-                    RefreshSlotVisuals();
-                }
-            }
-            else
+            if (!bookings.ContainsKey(key))
             {
                 MessageBox.Show("No booking exists in the selected slot.", "Delete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
             }
+
+            if (MessageBox.Show("Remove this booking?", "Confirm", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                return;
+
+            // before removing single booking, push undo snapshot
+            PushUndo(new[] { key }, $"Delete booking {key}");
+
+            bookings.Remove(key);
+            // clear selection if it pointed to the removed slot
+            if (selectedSlot != null && (selectedSlot.Tag as string) == key)
+                selectedSlot = null;
+
+            RefreshSlotVisuals();
         }
 
         private void BlockButton_Click(object sender, EventArgs e)
@@ -544,6 +635,26 @@ namespace WinFormsLegacyTest
                     if (answer != DialogResult.Yes)
                         return;
                 }
+
+                // after conflict check...
+                // before applying blocks
+                PushUndo(keysToBlock, $"Block {hangar} {start:yyyy-MM-dd}..{end:yyyy-MM-dd}");
+
+                // Apply the block: set booking for each slot -> Description = "Unavailable"
+                foreach (var key in keysToBlock)
+                {
+                    var tuple = ParseSlotKey(key); // returns (hangar, date)
+                    bookings[key] = new Booking
+                    {
+                        Hangar = tuple.hangar,
+                        Date = tuple.date,
+                        Description = "Unavailable"
+                    };
+                }
+
+                // Refresh UI
+                RefreshSlotVisuals();
+
 
                 // Apply the block: set booking for each slot -> Description = "Unavailable"
                 foreach (var key in keysToBlock)
@@ -618,6 +729,9 @@ namespace WinFormsLegacyTest
                         return;
                 }
 
+                // before creating/updating - capture undo snapshot for all affected keys
+                PushUndo(keysToCreate, $"Multi booking {hangar} {start:yyyy-MM-dd}..{end:yyyy-MM-dd}");
+
                 // create/update bookings for every day in the range
                 foreach (var k in keysToCreate)
                 {
@@ -654,6 +768,13 @@ namespace WinFormsLegacyTest
 
             if (answer != DialogResult.Yes) return;
 
+            // before clearing
+            PushUndo(bookings.Keys.ToList(), "Clear entire schedule");
+            bookings.Clear();
+            selectedSlot = null;
+            RefreshSlotVisuals();
+
+
             // Clear all bookings and refresh UI
             bookings.Clear();
 
@@ -664,6 +785,66 @@ namespace WinFormsLegacyTest
 
             MessageBox.Show("Schedule cleared.", "Clear Schedule", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
+
+        private void ClearHangarButton_Click(object sender, EventArgs e)
+        {
+            // Ask the user to pick which hangar to clear
+            using (var dlg = new HangarSelectDialog(GetHangarNames()))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+                string hangar = dlg.SelectedHangar;
+                if (string.IsNullOrEmpty(hangar)) return;
+
+                // Build list of keys for the visible days for that hangar
+                var keysToRemove = new List<string>();
+                for (int i = 0; i < days; i++)
+                {
+                    DateTime d = DateTime.Today.AddDays(i);
+                    string key = SlotKey(hangar, d);
+                    if (bookings.ContainsKey(key))
+                        keysToRemove.Add(key);
+                }
+
+                // before removing
+                PushUndo(keysToRemove, $"Clear hangar {hangar}");
+                foreach (var k in keysToRemove) bookings.Remove(k);
+                if (selectedSlot != null && keysToRemove.Contains(selectedSlot.Tag as string)) selectedSlot = null;
+                RefreshSlotVisuals();
+
+
+                if (keysToRemove.Count == 0)
+                {
+                    MessageBox.Show($"No bookings found for {hangar} in the visible range.", "Clear Hangar", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+
+                // Confirm
+                var resp = MessageBox.Show(
+                    $"This will remove {keysToRemove.Count} booking{(keysToRemove.Count == 1 ? "" : "s")} for {hangar} in the visible date range. Continue?",
+                    "Confirm clear hangar",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+
+                if (resp != DialogResult.Yes) return;
+
+                // Remove them
+                foreach (var k in keysToRemove)
+                    bookings.Remove(k);
+
+                // Clear selection if it was a removed slot
+                if (selectedSlot != null)
+                {
+                    string selKey = selectedSlot.Tag as string;
+                    if (selKey != null && keysToRemove.Contains(selKey))
+                        selectedSlot = null;
+                }
+
+                RefreshSlotVisuals();
+                MessageBox.Show($"Cleared {keysToRemove.Count} booking{(keysToRemove.Count == 1 ? "" : "s")} for {hangar}.", "Clear Hangar", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+        }
+
 
 
 
@@ -931,6 +1112,46 @@ namespace WinFormsLegacyTest
                 CancelButton = btnCancel;
             }
         }
+
+        // Simple modal dialog to pick one hangar from the current list
+        private class HangarSelectDialog : Form
+        {
+            private ComboBox cbHangar;
+            private Button btnOk;
+            private Button btnCancel;
+
+            public string SelectedHangar => cbHangar.SelectedItem?.ToString();
+
+            public HangarSelectDialog(string[] hangars)
+            {
+                Text = "Select Hangar to Clear";
+                FormBorderStyle = FormBorderStyle.FixedDialog;
+                MaximizeBox = false;
+                MinimizeBox = false;
+                StartPosition = FormStartPosition.CenterParent;
+                Width = 360;
+                Height = 140;
+
+                Label lbl = new Label { Text = "Hangar:", Left = 10, Top = 14, Width = 60 };
+                cbHangar = new ComboBox { Left = 80, Top = 10, Width = 260, DropDownStyle = ComboBoxStyle.DropDownList };
+                cbHangar.Items.AddRange(hangars);
+
+                btnOk = new Button { Text = "OK", Left = 160, Width = 80, Top = 50, DialogResult = DialogResult.OK };
+                btnCancel = new Button { Text = "Cancel", Left = 250, Width = 80, Top = 50, DialogResult = DialogResult.Cancel };
+
+                Controls.Add(lbl);
+                Controls.Add(cbHangar);
+                Controls.Add(btnOk);
+                Controls.Add(btnCancel);
+
+                AcceptButton = btnOk;
+                CancelButton = btnCancel;
+
+                if (cbHangar.Items.Count > 0)
+                    cbHangar.SelectedIndex = 0;
+            }
+        }
+
 
 
     }
