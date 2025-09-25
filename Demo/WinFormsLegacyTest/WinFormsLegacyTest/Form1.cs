@@ -1,23 +1,29 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Linq;
+using System.Reflection;
 using System.Windows.Forms;
 
 namespace WinFormsLegacyTest
 {
     public partial class Form1 : Form
     {
-        // dynamic state
-        private string[] hangars;             // generated based on user choice
-        private int days;                     // number of days chosen by user
+        // Dynamic state
+        private string[] hangars;             // Generated based on user choice
+        private int days;                     // Number of days chosen by user
         private readonly Dictionary<string, Booking> bookings = new Dictionary<string, Booking>();
         private readonly Dictionary<string, Button> slotButtons = new Dictionary<string, Button>();
         private Button selectedSlot = null;
 
-        // sizing constants for the scrollable grid
+        // Used to delay resize handling
+        private System.Windows.Forms.Timer resizeTimer;
+
+        // Sizing constants for the scrollable grid
         private const int DayColumnWidth = 120;
         private const int HangarColumnWidth = 120;
         private const int HeaderHeight = 30;
+
 
         public Form1()
         {
@@ -50,6 +56,9 @@ namespace WinFormsLegacyTest
                     days = 7;
                 }
             }
+            // larger default window
+            this.StartPosition = FormStartPosition.CenterScreen;
+            this.ClientSize = new Size(1200, 800);
 
             // build the UI now that we know hangar/day counts
             SetupUI();
@@ -99,14 +108,26 @@ namespace WinFormsLegacyTest
             Button addButton = new Button { Text = "Add", Width = 75 };
             Button editButton = new Button { Text = "Edit", Width = 75 };
             Button deleteButton = new Button { Text = "Delete", Width = 75 };
+            Button blockButton = new Button { Text = "Block", Width = 75 };
+            Button multiButton = new Button { Text = "Multi", Width = 75 };
+            Button clearButton = new Button { Text = "Clear", Width = 75 };
+
+
 
             addButton.Click += AddButton_Click;
             editButton.Click += EditButton_Click;
             deleteButton.Click += DeleteButton_Click;
+            blockButton.Click += BlockButton_Click;
+            multiButton.Click += MultiButton_Click;
+            clearButton.Click += ClearButton_Click;
+
 
             buttonPanel.Controls.Add(addButton);
             buttonPanel.Controls.Add(editButton);
             buttonPanel.Controls.Add(deleteButton);
+            buttonPanel.Controls.Add(blockButton);
+            buttonPanel.Controls.Add(multiButton);
+            buttonPanel.Controls.Add(clearButton);
 
             mainLayout.Controls.Add(buttonPanel, 0, 0);
 
@@ -128,6 +149,22 @@ namespace WinFormsLegacyTest
                 Padding = new Padding(0)
             };
 
+            // initialize debounce timer (now inside SetupUI so it can call the local UpdateSizing)
+            resizeTimer = new System.Windows.Forms.Timer { Interval = 120 };
+            resizeTimer.Tick += (s, e) =>
+            {
+                resizeTimer.Stop();
+                UpdateSizing(); // calls the local UpdateSizing function further down in this method
+            };
+
+            // Enable double buffering on scheduleGrid
+            var pi = scheduleGrid.GetType().GetProperty("DoubleBuffered", BindingFlags.Instance | BindingFlags.NonPublic);
+            pi?.SetValue(scheduleGrid, true, null);
+
+            // When attaching resize handlers, debounce:
+            scrollPanel.Resize += (s, e) => { resizeTimer.Stop(); resizeTimer.Start(); };
+            this.Resize += (s, e) => { resizeTimer.Stop(); resizeTimer.Start(); };
+
             int colCount = 1 + days;
             int rowCount = 1 + hangars.Length;
             scheduleGrid.ColumnCount = colCount;
@@ -135,6 +172,9 @@ namespace WinFormsLegacyTest
 
             // NOTE: We'll set ColumnStyles/RowStyles in UpdateSizing() below,
             // but TableLayoutPanel needs the count set before adding controls.
+
+            this.SuspendLayout();
+            scheduleGrid.SuspendLayout();
 
             // ---- Add header (top-left and date headers) ----
             var headerHangar = new Label
@@ -196,6 +236,9 @@ namespace WinFormsLegacyTest
             scrollPanel.Controls.Add(scheduleGrid);
             scheduleGrid.Location = new Point(0, 0);
             scheduleGrid.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+
+            scheduleGrid.ResumeLayout(false);
+            this.ResumeLayout(false);
 
             // ---- Sizing / layout logic that switches between "fill" and "scroll" modes ----
             void UpdateSizing()
@@ -264,14 +307,35 @@ namespace WinFormsLegacyTest
 
                 // repaint slot visuals according to bookings (keeps color/selection consistent)
                 RefreshSlotVisuals();
+
+                // ***Maybe unnecessary but felt faster with it included***
+                //// enable double buffering on the TableLayoutPanel using reflection
+                //var t = scheduleGrid.GetType();
+                //pi = t.GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                //pi?.SetValue(scheduleGrid, true, null);
+
+                // also turn on double buffering for the form itself (optional)
+                this.SetStyle(System.Windows.Forms.ControlStyles.OptimizedDoubleBuffer |
+                              System.Windows.Forms.ControlStyles.AllPaintingInWmPaint, true);
+                this.UpdateStyles();
+
             }
 
             // initial sizing pass
             UpdateSizing();
 
-            // keep sizing in sync when the scrollPanel (or window) is resized
-            scrollPanel.Resize += (s, e) => UpdateSizing();
-            this.Resize += (s, e) => UpdateSizing();
+            // Instead of: scrollPanel.Resize += (s,e) => UpdateSizing();
+            scrollPanel.Resize += (s, e) => {
+                resizeTimer.Stop();
+                resizeTimer.Start();
+            };
+
+            // Form resize also restarts it
+            this.Resize += (s, e) => {
+                resizeTimer.Stop();
+                resizeTimer.Start();
+            };
+
         }
 
 
@@ -444,6 +508,166 @@ namespace WinFormsLegacyTest
             }
         }
 
+        private void BlockButton_Click(object sender, EventArgs e)
+        {
+            // Require selection of a hangar and dates using a dialog
+            using (var dlg = new BlockDialog(GetHangarNames(), days))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+                string hangar = dlg.SelectedHangar;
+                DateTime start = dlg.SelectedStartDate;
+                DateTime end = dlg.SelectedEndDate;
+
+                if (end < start)
+                {
+                    MessageBox.Show("End date must be the same or after the start date.", "Invalid range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Compute keys for the date range
+                var keysToBlock = new List<string>();
+                for (DateTime d = start.Date; d <= end.Date; d = d.AddDays(1))
+                    keysToBlock.Add(SlotKey(hangar, d));
+
+                // Check for conflicts: booked and not already "Unavailable"
+                var conflicts = keysToBlock.Where(k => bookings.ContainsKey(k) && (bookings[k].Description ?? "") != "Unavailable").ToList();
+
+                if (conflicts.Count > 0)
+                {
+                    var answer = MessageBox.Show(
+                        $"{conflicts.Count} slot(s) in that range are already booked. Do you want to overwrite them and mark as Unavailable?",
+                        "Confirm overwrite",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning);
+
+                    if (answer != DialogResult.Yes)
+                        return;
+                }
+
+                // Apply the block: set booking for each slot -> Description = "Unavailable"
+                foreach (var key in keysToBlock)
+                {
+                    // parse hangar & date from key to create Booking
+                    var tuple = ParseSlotKey(key); // returns (hangar, date)
+                    var booking = new Booking
+                    {
+                        Hangar = tuple.hangar,
+                        Date = tuple.date,
+                        Description = "Unavailable"
+                    };
+                    bookings[key] = booking;
+                }
+
+                // Refresh UI
+                RefreshSlotVisuals();
+            }
+        }
+
+        private void MultiButton_Click(object sender, EventArgs e)
+        {
+            using (var dlg = new MultiBookingDialog(GetHangarNames(), days))
+            {
+                if (dlg.ShowDialog(this) != DialogResult.OK) return;
+
+                string hangar = dlg.SelectedHangar;
+                DateTime start = dlg.SelectedStartDate;
+                DateTime end = dlg.SelectedEndDate;
+                string desc = dlg.Description?.Trim() ?? "";
+
+                if (string.IsNullOrEmpty(desc))
+                {
+                    MessageBox.Show("Please enter a description for the event.", "Missing description", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                if (end < start)
+                {
+                    MessageBox.Show("End date must be the same or after the start date.", "Invalid range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Build keys for the range and ensure they're in the visible range
+                var keysToCreate = new List<string>();
+                for (DateTime d = start.Date; d <= end.Date; d = d.AddDays(1))
+                {
+                    int offset = (d.Date - DateTime.Today).Days;
+                    if (offset < 0 || offset >= days)
+                    {
+                        MessageBox.Show("Selected date range must be within the currently displayed days.", "Out of range", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        return;
+                    }
+                    keysToCreate.Add(SlotKey(hangar, d));
+                }
+
+                // detect conflicts (existing bookings that aren't "Unavailable" — adjust to your policy)
+                var conflicts = new List<string>();
+                foreach (var k in keysToCreate)
+                    if (bookings.ContainsKey(k) && (bookings[k].Description ?? "") != "Unavailable")
+                        conflicts.Add(k);
+
+                if (conflicts.Count > 0)
+                {
+                    var answer = MessageBox.Show(
+                        $"{conflicts.Count} slot(s) in that range are already booked. Overwrite them with this event?",
+                        "Confirm overwrite",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning);
+
+                    if (answer != DialogResult.Yes)
+                        return;
+                }
+
+                // create/update bookings for every day in the range
+                foreach (var k in keysToCreate)
+                {
+                    var t = ParseSlotKey(k); // returns (hangar, date)
+                    bookings[k] = new Booking
+                    {
+                        Hangar = t.hangar,
+                        Date = t.date,
+                        Description = desc
+                    };
+                }
+
+                RefreshSlotVisuals();
+            }
+        }
+
+        private void ClearButton_Click(object sender, EventArgs e)
+        {
+            // count current bookings for helpful confirmation
+            int count = bookings.Count;
+
+            if (count == 0)
+            {
+                MessageBox.Show("There are no bookings to clear.", "Clear Schedule", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            // Ask for confirmation (shows how many bookings will be removed)
+            var answer = MessageBox.Show(
+                $"This will permanently remove {count} booking{(count == 1 ? "" : "s")}. Are you sure you want to clear the entire schedule?",
+                "Confirm clear schedule",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning);
+
+            if (answer != DialogResult.Yes) return;
+
+            // Clear all bookings and refresh UI
+            bookings.Clear();
+
+            // clear selection so there's no stale selectedSlot
+            selectedSlot = null;
+
+            RefreshSlotVisuals();
+
+            MessageBox.Show("Schedule cleared.", "Clear Schedule", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
+
+
+
+
 
         // helper: return current hangar name list
         private string[] GetHangarNames()
@@ -572,5 +796,142 @@ namespace WinFormsLegacyTest
                 CancelButton = btnCancel;
             }
         }
+
+        // Simple dialog to pick hangar + start/end date among the shown days
+        private class BlockDialog : Form
+        {
+            private ComboBox cbHangar;
+            private ComboBox cbStart;
+            private ComboBox cbEnd;
+            private Button btnOk;
+            private Button btnCancel;
+
+            public string SelectedHangar => cbHangar.SelectedItem?.ToString();
+
+            // cb items are "yyyy-MM-dd | Tue MMM dd" same format as BookingDialog
+            public DateTime SelectedStartDate => DateTime.Parse(cbStart.SelectedItem.ToString().Split('|')[0].Trim());
+            public DateTime SelectedEndDate => DateTime.Parse(cbEnd.SelectedItem.ToString().Split('|')[0].Trim());
+
+            public BlockDialog(string[] hangars, int days)
+            {
+                Text = "Block Unavailable Range";
+                FormBorderStyle = FormBorderStyle.FixedDialog;
+                MaximizeBox = false;
+                MinimizeBox = false;
+                StartPosition = FormStartPosition.CenterParent;
+                Width = 420;
+                Height = 210;
+
+                Label lblHangar = new Label { Text = "Hangar:", Left = 10, Top = 12, Width = 60 };
+                cbHangar = new ComboBox { Left = 80, Top = 8, Width = 300, DropDownStyle = ComboBoxStyle.DropDownList };
+                cbHangar.Items.AddRange(hangars);
+
+                Label lblStart = new Label { Text = "Start:", Left = 10, Top = 46, Width = 60 };
+                cbStart = new ComboBox { Left = 80, Top = 42, Width = 300, DropDownStyle = ComboBoxStyle.DropDownList };
+
+                Label lblEnd = new Label { Text = "End:", Left = 10, Top = 80, Width = 60 };
+                cbEnd = new ComboBox { Left = 80, Top = 76, Width = 300, DropDownStyle = ComboBoxStyle.DropDownList };
+
+                // fill date choices
+                for (int i = 0; i < days; i++)
+                {
+                    DateTime d = DateTime.Today.AddDays(i);
+                    string item = $"{d:yyyy-MM-dd} | {d:ddd MMM dd}";
+                    cbStart.Items.Add(item);
+                    cbEnd.Items.Add(item);
+                }
+
+                // default selections
+                if (cbHangar.Items.Count > 0) cbHangar.SelectedIndex = 0;
+                if (cbStart.Items.Count > 0) cbStart.SelectedIndex = 0;
+                if (cbEnd.Items.Count > 0) cbEnd.SelectedIndex = 0;
+
+                btnOk = new Button { Text = "OK", Left = 230, Width = 70, Top = 120, DialogResult = DialogResult.OK };
+                btnCancel = new Button { Text = "Cancel", Left = 310, Width = 70, Top = 120, DialogResult = DialogResult.Cancel };
+
+                Controls.Add(lblHangar);
+                Controls.Add(cbHangar);
+                Controls.Add(lblStart);
+                Controls.Add(cbStart);
+                Controls.Add(lblEnd);
+                Controls.Add(cbEnd);
+                Controls.Add(btnOk);
+                Controls.Add(btnCancel);
+
+                AcceptButton = btnOk;
+                CancelButton = btnCancel;
+            }
+        }
+
+        private class MultiBookingDialog : Form
+        {
+            private ComboBox cbHangar;
+            private ComboBox cbStart;
+            private ComboBox cbEnd;
+            private TextBox txtDesc;
+            private Button btnOk;
+            private Button btnCancel;
+
+            public string SelectedHangar => cbHangar.SelectedItem?.ToString();
+            public DateTime SelectedStartDate => DateTime.Parse(cbStart.SelectedItem.ToString().Split('|')[0].Trim());
+            public DateTime SelectedEndDate => DateTime.Parse(cbEnd.SelectedItem.ToString().Split('|')[0].Trim());
+            public string Description { get => txtDesc.Text; set => txtDesc.Text = value; }
+
+            public MultiBookingDialog(string[] hangars, int days)
+            {
+                Text = "Multi-day Booking";
+                FormBorderStyle = FormBorderStyle.FixedDialog;
+                MaximizeBox = false;
+                MinimizeBox = false;
+                StartPosition = FormStartPosition.CenterParent;
+                Width = 460;
+                Height = 260;
+
+                Label lblHangar = new Label { Text = "Hangar:", Left = 10, Top = 12, Width = 60 };
+                cbHangar = new ComboBox { Left = 80, Top = 8, Width = 360, DropDownStyle = ComboBoxStyle.DropDownList };
+                cbHangar.Items.AddRange(hangars);
+
+                Label lblStart = new Label { Text = "Start:", Left = 10, Top = 46, Width = 60 };
+                cbStart = new ComboBox { Left = 80, Top = 42, Width = 360, DropDownStyle = ComboBoxStyle.DropDownList };
+
+                Label lblEnd = new Label { Text = "End:", Left = 10, Top = 82, Width = 60 };
+                cbEnd = new ComboBox { Left = 80, Top = 78, Width = 360, DropDownStyle = ComboBoxStyle.DropDownList };
+
+                Label lblDesc = new Label { Text = "Description:", Left = 10, Top = 118, Width = 80 };
+                txtDesc = new TextBox { Left = 10, Top = 142, Width = 430, Height = 36, Multiline = true };
+
+                btnOk = new Button { Text = "OK", Left = 270, Width = 80, Top = 188, DialogResult = DialogResult.OK };
+                btnCancel = new Button { Text = "Cancel", Left = 360, Width = 80, Top = 188, DialogResult = DialogResult.Cancel };
+
+                // populate date combos with visible days only
+                for (int i = 0; i < days; i++)
+                {
+                    DateTime d = DateTime.Today.AddDays(i);
+                    string item = $"{d:yyyy-MM-dd} | {d:ddd MMM dd}";
+                    cbStart.Items.Add(item);
+                    cbEnd.Items.Add(item);
+                }
+
+                if (cbHangar.Items.Count > 0) cbHangar.SelectedIndex = 0;
+                if (cbStart.Items.Count > 0) cbStart.SelectedIndex = 0;
+                if (cbEnd.Items.Count > 0) cbEnd.SelectedIndex = cbEnd.Items.Count - 1; // default end = last day
+
+                Controls.Add(lblHangar);
+                Controls.Add(cbHangar);
+                Controls.Add(lblStart);
+                Controls.Add(cbStart);
+                Controls.Add(lblEnd);
+                Controls.Add(cbEnd);
+                Controls.Add(lblDesc);
+                Controls.Add(txtDesc);
+                Controls.Add(btnOk);
+                Controls.Add(btnCancel);
+
+                AcceptButton = btnOk;
+                CancelButton = btnCancel;
+            }
+        }
+
+
     }
 }
